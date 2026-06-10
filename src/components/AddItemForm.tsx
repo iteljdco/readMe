@@ -18,21 +18,25 @@ export default function AddItemForm({
   const [linkUrl, setLinkUrl] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+
+  const getFilePath = (file: File) =>
+    (file as any).webkitRelativePath || file.name;
 
   const handleFiles = (incoming: FileList | null) => {
     if (!incoming) return;
     const arr = Array.from(incoming);
     setAttachedFiles((prev) => {
-      const names = new Set(prev.map((f) => f.name));
-      return [...prev, ...arr.filter((f) => !names.has(f.name))];
+      const paths = new Set(prev.map(getFilePath));
+      return [...prev, ...arr.filter((f) => !paths.has(getFilePath(f)))];
     });
   };
 
-  const removeFile = (name: string) =>
-    setAttachedFiles((prev) => prev.filter((f) => f.name !== name));
+  const removeFile = (path: string) =>
+    setAttachedFiles((prev) => prev.filter((f) => getFilePath(f) !== path));
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -42,6 +46,7 @@ export default function AddItemForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setUploadProgress(null);
 
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) {
@@ -50,7 +55,7 @@ export default function AddItemForm({
       return;
     }
 
-    // 1. Insert the reading item
+    // 1. Insert reading item
     const { data: inserted, error: insertError } = await supabase
       .from('reading_items')
       .insert([{
@@ -65,48 +70,72 @@ export default function AddItemForm({
       .single();
 
     if (insertError || !inserted) {
-      alert(insertError?.message ?? 'Failed to save material.');
+      console.error('Insert error:', insertError);
+      alert(`Failed to save material: ${insertError?.message}`);
       setSaving(false);
       return;
     }
 
     const materialId = inserted.id;
 
-    // 2. Upload each file to Storage and record in material_files
+    // 2. Upload files preserving folder structure
+    let uploaded = 0;
     for (const file of attachedFiles) {
-      const filePath = `${user.id}/${materialId}/${file.name}`;
+      const relativePath = getFilePath(file);
+      const storagePath = `${user.id}/${materialId}/${relativePath}`;
+
+      setUploadProgress(`Uploading ${uploaded + 1} of ${attachedFiles.length}: ${file.name}`);
 
       const { error: uploadError } = await supabase.storage
         .from('reading-materials')
-        .upload(filePath, file, { upsert: true });
+        .upload(storagePath, file, { upsert: true });
 
       if (uploadError) {
-        console.error(`Failed to upload ${file.name}:`, uploadError.message);
+        console.error(`Upload failed for ${relativePath}:`, uploadError.message);
         continue;
       }
 
-      await supabase.from('material_files').insert([{
-        material_id: materialId,
-        user_id: user.id,
-        file_name: file.name,
-        file_path: filePath,
-        file_size: file.size,
-      }]);
+      const { error: dbError } = await supabase
+        .from('material_files')
+        .insert([{
+          material_id: materialId,
+          user_id: user.id,
+          file_name: relativePath,
+          file_path: storagePath,
+          file_size: file.size,
+        }]);
+
+      if (dbError) {
+        console.error(`DB insert failed for ${relativePath}:`, dbError.message);
+      } else {
+        uploaded++;
+      }
     }
 
     setSaving(false);
+    setUploadProgress(null);
     setTitle(''); setType('book'); setStatus('want');
     setNotes(''); setLinkUrl(''); setAttachedFiles([]);
     onAdd();
   };
 
   const statusOptions: { value: MaterialStatus; label: string; bg: string; color: string }[] = [
-    { value: 'want',    label: 'Want',    bg: '#FFF3E0', color: '#E65100' },
-    { value: 'reading', label: 'Reading', bg: '#E0F7FF', color: '#0077BE' },
-    { value: 'done',    label: 'Done',    bg: '#C8E6C9', color: '#2E7D32' },
+    { value: 'want',    label: 'Want',    bg: '#FAEEDA', color: '#854F0B' },
+    { value: 'reading', label: 'Reading', bg: '#E6F1FB', color: '#185FA5' },
+    { value: 'done',    label: 'Done',    bg: '#EAF3DE', color: '#3B6D11' },
   ];
 
   const typeOptions: MaterialType[] = ['book', 'module', 'article', 'other'];
+
+  // Group attached files by folder for display
+  const grouped = attachedFiles.reduce<Record<string, File[]>>((acc, f) => {
+    const rel = getFilePath(f);
+    const parts = rel.split('/');
+    const folder = parts.length > 1 ? parts[0] : '—';
+    if (!acc[folder]) acc[folder] = [];
+    acc[folder].push(f);
+    return acc;
+  }, {});
 
   return (
     <form onSubmit={handleSubmit} style={s.form}>
@@ -165,7 +194,7 @@ export default function AddItemForm({
           placeholder="Paste text, write notes, or jot down why you want to read this..."
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          rows={5}
+          rows={4}
           style={s.textarea}
         />
       </div>
@@ -175,7 +204,7 @@ export default function AddItemForm({
         <label style={s.label}>Link (optional)</label>
         <input
           type="url"
-          placeholder="https://example.com/book.pdf"
+          placeholder="https://example.com/article"
           value={linkUrl}
           onChange={(e) => setLinkUrl(e.target.value)}
           style={s.input}
@@ -185,9 +214,13 @@ export default function AddItemForm({
       {/* Files & Folders */}
       <div style={s.field}>
         <label style={s.label}>Files & folders</label>
-        <div style={s.dropZone} onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+        <div
+          style={s.dropZone}
+          onDrop={handleDrop}
+          onDragOver={(e) => e.preventDefault()}
+        >
           <p style={s.dropText}>Drag & drop files here, or</p>
-          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
             <button type="button" style={s.uploadBtn} onClick={() => fileInputRef.current?.click()}>
               Choose files
             </button>
@@ -195,34 +228,82 @@ export default function AddItemForm({
               Choose folder
             </button>
           </div>
-          <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
-            onChange={(e) => handleFiles(e.target.files)} />
-          <input ref={folderInputRef} type="file" multiple
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+          <input
+            ref={folderInputRef}
+            type="file"
+            multiple
             // @ts-ignore
             webkitdirectory="true"
             style={{ display: 'none' }}
-            onChange={(e) => handleFiles(e.target.files)} />
+            onChange={(e) => handleFiles(e.target.files)}
+          />
         </div>
 
+        {/* Grouped file preview */}
         {attachedFiles.length > 0 && (
-          <ul style={s.fileList}>
-            {attachedFiles.map((f) => (
-              <li key={f.name} style={s.fileItem}>
-                <span style={s.fileName}>📄 {f.name}</span>
-                <span style={s.fileSize}>{(f.size / 1024).toFixed(1)} KB</span>
-                <button type="button" style={s.removeBtn} onClick={() => removeFile(f.name)}>✕</button>
-              </li>
+          <div style={s.filePreview}>
+            {Object.entries(grouped).map(([folder, folderFiles]) => (
+              <div key={folder}>
+                {folder !== '—' && (
+                  <div style={s.folderRow}>
+                    <span>📁 {folder}</span>
+                    <span style={s.folderCount}>{folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}</span>
+                  </div>
+                )}
+                <ul style={s.fileList}>
+                  {folderFiles.map((f) => {
+                    const rel = getFilePath(f);
+                    const displayName = folder !== '—' ? rel.split('/').slice(1).join('/') : f.name;
+                    return (
+                      <li key={rel} style={s.fileItem}>
+                        <span style={s.fileIcon}>
+                          {f.name.endsWith('.pdf') ? '📕' : '📄'}
+                        </span>
+                        <span style={s.fileName}>{displayName}</span>
+                        <span style={s.fileSize}>{(f.size / 1024).toFixed(1)} KB</span>
+                        <button
+                          type="button"
+                          style={s.removeBtn}
+                          onClick={() => removeFile(rel)}
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
         )}
       </div>
+
+      {/* Upload progress */}
+      {uploadProgress && (
+        <div style={s.progressBar}>
+          <p style={s.progressText}>{uploadProgress}</p>
+        </div>
+      )}
 
       {/* Actions */}
       <div style={s.actions}>
         {onCancel && (
-          <button type="button" onClick={onCancel} style={s.cancelBtn}>Cancel</button>
+          <button type="button" onClick={onCancel} style={s.cancelBtn}>
+            Cancel
+          </button>
         )}
-        <button type="submit" disabled={saving} style={{ ...s.saveBtn, opacity: saving ? 0.7 : 1 }}>
+        <button
+          type="submit"
+          disabled={saving}
+          style={{ ...s.saveBtn, opacity: saving ? 0.7 : 1 }}
+        >
           {saving ? 'Saving…' : 'Save material'}
         </button>
       </div>
@@ -235,138 +316,89 @@ const s: Record<string, React.CSSProperties> = {
   field: { display: 'grid', gap: '6px' },
   row: { display: 'flex', gap: '1.25rem', flexWrap: 'wrap' },
   label: {
-    fontSize: '11px',
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: '0.07em',
-    color: '#0077BE',
-    fontFamily: "'Arial', sans-serif",
+    fontSize: '11px', fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.07em', color: '#888', fontFamily: "'Arial', sans-serif",
   },
   input: {
-    width: '100%',
-    boxSizing: 'border-box' as const,
-    padding: '10px 12px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    fontSize: '14px',
-    fontFamily: "'Georgia', serif",
-    background: '#F0F9FF',
-    color: '#0C3A66',
-    outline: 'none',
+    width: '100%', boxSizing: 'border-box' as const, padding: '10px 12px',
+    border: '1px solid #E0DDD5', borderRadius: '6px',
+    fontSize: '14px', fontFamily: "'Georgia', serif",
+    background: '#FDFCF9', color: '#1A1A18', outline: 'none',
   },
   textarea: {
-    width: '100%',
-    boxSizing: 'border-box' as const,
-    padding: '10px 12px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    fontSize: '14px',
-    fontFamily: "'Georgia', serif",
-    background: '#F0F9FF',
-    color: '#0C3A66',
-    resize: 'vertical' as const,
-    lineHeight: 1.65,
-    outline: 'none',
+    width: '100%', boxSizing: 'border-box' as const, padding: '10px 12px',
+    border: '1px solid #E0DDD5', borderRadius: '6px',
+    fontSize: '14px', fontFamily: "'Georgia', serif",
+    background: '#FDFCF9', color: '#1A1A18',
+    resize: 'vertical' as const, lineHeight: 1.65, outline: 'none',
   },
   pillGroup: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
   pill: {
-    padding: '5px 12px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '20px',
-    background: '#fff',
-    color: '#0099FF',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontFamily: "'Arial', sans-serif",
-    fontWeight: 500,
+    padding: '5px 12px', border: '1px solid #D5D2CA',
+    borderRadius: '20px', background: '#fff', color: '#888',
+    cursor: 'pointer', fontSize: '12px', fontFamily: "'Arial', sans-serif",
   },
-  pillActive: {
-    background: '#0077BE',
-    color: '#fff',
-    borderColor: '#0077BE',
-  },
+  pillActive: { background: '#1A1A18', color: '#fff', borderColor: '#1A1A18' },
   dropZone: {
-    border: '1.5px dashed #B3E5FC',
-    borderRadius: '8px',
-    padding: '1.5rem 1rem',
-    textAlign: 'center' as const,
-    background: '#F0F9FF',
+    border: '1.5px dashed #D5D2CA', borderRadius: '8px',
+    padding: '1.5rem 1rem', textAlign: 'center' as const, background: '#FDFCF9',
   },
   dropText: {
-    margin: '0 0 10px',
-    fontSize: '13px',
-    color: '#0099FF',
+    margin: '0 0 10px', fontSize: '13px', color: '#aaa',
     fontFamily: "'Arial', sans-serif",
   },
   uploadBtn: {
-    padding: '6px 14px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    background: '#fff',
-    color: '#0077BE',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontFamily: "'Arial', sans-serif",
-    fontWeight: 500,
+    padding: '6px 14px', border: '1px solid #D5D2CA',
+    borderRadius: '6px', background: '#fff', color: '#555',
+    cursor: 'pointer', fontSize: '12px', fontFamily: "'Arial', sans-serif",
+  },
+  filePreview: {
+    marginTop: '8px', display: 'grid', gap: '8px',
+  },
+  folderRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '6px 10px', background: '#F4F3EE',
+    borderRadius: '6px 6px 0 0', border: '1px solid #E0DDD5',
+    borderBottom: 'none', fontSize: '12px', fontWeight: 700, color: '#555',
+  },
+  folderCount: {
+    fontSize: '11px', color: '#aaa', fontWeight: 400,
   },
   fileList: {
-    listStyle: 'none',
-    margin: '8px 0 0',
-    padding: 0,
-    display: 'grid',
-    gap: '4px',
+    listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '2px',
   },
   fileItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '6px 10px',
-    background: '#E0F7FF',
-    borderRadius: '6px',
-    border: '1px solid #B3E5FC',
+    display: 'flex', alignItems: 'center', gap: '8px',
+    padding: '6px 10px', background: '#FDFCF9',
+    border: '1px solid #E0DDD5', borderTop: 'none',
   },
+  fileIcon: { fontSize: '14px', flexShrink: 0 },
   fileName: {
-    fontSize: '12px',
-    color: '#0077BE',
-    fontFamily: "'Arial', sans-serif",
-    flex: 1,
-    fontWeight: 500,
+    fontSize: '12px', color: '#555', fontFamily: "'Arial', sans-serif",
+    flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
   },
-  fileSize: {
-    fontSize: '11px',
-    color: '#0099FF',
-    fontFamily: "'Arial', sans-serif",
-  },
+  fileSize: { fontSize: '11px', color: '#aaa' },
   removeBtn: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    color: '#FF6B6B',
-    fontSize: '12px',
-    fontWeight: 600,
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#ccc', fontSize: '12px', flexShrink: 0,
+  },
+  progressBar: {
+    padding: '10px 14px', background: '#F4F3EE',
+    borderRadius: '6px', border: '1px solid #E0DDD5',
+  },
+  progressText: {
+    margin: 0, fontSize: '12px', color: '#888',
+    fontFamily: "'Arial', sans-serif",
   },
   actions: { display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' },
   cancelBtn: {
-    padding: '8px 16px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    background: '#fff',
-    color: '#0077BE',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontFamily: "'Arial', sans-serif",
-    fontWeight: 500,
+    padding: '8px 16px', border: '1px solid #D5D2CA',
+    borderRadius: '6px', background: '#fff', color: '#888',
+    cursor: 'pointer', fontSize: '13px', fontFamily: "'Arial', sans-serif",
   },
   saveBtn: {
-    padding: '8px 20px',
-    border: 'none',
-    borderRadius: '6px',
-    background: '#0077BE',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontWeight: 700,
-    fontFamily: "'Arial', sans-serif",
-    transition: 'background 0.2s',
+    padding: '8px 20px', border: 'none', borderRadius: '6px',
+    background: '#1A1A18', color: '#fff', cursor: 'pointer',
+    fontSize: '13px', fontWeight: 700, fontFamily: "'Arial', sans-serif",
   },
 };

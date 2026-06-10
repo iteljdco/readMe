@@ -3,10 +3,10 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { readingStatusLabels, type ReadingItem, type ReadingStatus } from '../../types';
 
-const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
-  want:    { bg: '#FFF3E0', color: '#E65100' },
-  reading: { bg: '#E0F7FF', color: '#0077BE' },
-  done:    { bg: '#C8E6C9', color: '#2E7D32' },
+const STATUS_CONFIG: Record<string, { bg: string; color: string; border: string }> = {
+  want:    { bg: '#FAEEDA', color: '#633806', border: '#FAC775' },
+  reading: { bg: '#E6F1FB', color: '#0C447C', border: '#B5D4F4' },
+  done:    { bg: '#EAF3DE', color: '#27500A', border: '#C0DD97' },
 };
 
 type MaterialFile = {
@@ -14,14 +14,6 @@ type MaterialFile = {
   file_name: string;
   file_path: string;
   file_size: number;
-};
-
-type Highlight = {
-  id: string;
-  text: string;
-  note: string;
-  position: number;
-  timestamp: number;
 };
 
 export default function MaterialDetail() {
@@ -32,7 +24,7 @@ export default function MaterialDetail() {
 
   useEffect(() => {
     if (!id) return;
-    const fetch = async () => {
+    const load = async () => {
       const { data, error } = await supabase
         .from('reading_items')
         .select('*')
@@ -48,51 +40,8 @@ export default function MaterialDetail() {
         .order('file_name');
       setFiles((fileData ?? []) as MaterialFile[]);
     };
-    fetch();
+    load();
   }, [id]);
-
-  const openFile = async (file: MaterialFile) => {
-    router.push(`/read/${id}/${file.id}`);
-  };
-
-  const markAsComplete = async () => {
-    const { error } = await supabase
-      .from('reading_items')
-      .update({ status: 'done' })
-      .eq('id', id);
-    if (error) alert(error.message);
-    else setItem((prev) => prev ? { ...prev, status: 'done' } : prev);
-  };
-
-  const deleteMaterial = async () => {
-    if (!confirm('Are you sure you want to delete this material? This action cannot be undone.')) {
-      return;
-    }
-    const { error } = await supabase
-      .from('reading_items')
-      .delete()
-      .eq('id', id);
-    if (error) {
-      alert(error.message);
-    } else {
-      router.push('/reading-list');
-    }
-  };
-
-  const archiveMaterial = async () => {
-    if (!confirm('Are you sure you want to unwant this material?')) {
-      return;
-    }
-    const { error } = await supabase
-      .from('reading_items')
-      .delete()
-      .eq('id', id);
-    if (error) {
-      alert(error.message);
-    } else {
-      router.push('/reading-list');
-    }
-  };
 
   const updateStatus = async (newStatus: string) => {
     const { error } = await supabase
@@ -103,11 +52,28 @@ export default function MaterialDetail() {
     else setItem((prev) => prev ? { ...prev, status: newStatus as ReadingStatus } : prev);
   };
 
-  if (!item) return <p style={{ padding: '2rem', fontFamily: 'Arial, sans-serif' }}>Loading…</p>;
+  const deleteMaterial = async () => {
+    if (!confirm('Delete this material? This cannot be undone.')) return;
+    const { error } = await supabase.from('reading_items').delete().eq('id', id);
+    if (error) alert(error.message);
+    else router.push('/dashboard');
+  };
 
-  const badge = STATUS_COLORS[item.status] ?? { bg: '#f4f4f4', color: '#555' };
+  const unwantMaterial = async () => {
+    if (!confirm('Remove this from your want list?')) return;
+    const { error } = await supabase.from('reading_items').delete().eq('id', id);
+    if (error) alert(error.message);
+    else router.push('/dashboard');
+  };
 
-  // Group files by folder prefix
+  if (!item) return (
+    <main style={s.page}>
+      <p style={{ color: '#85B7EB', fontSize: '13px', padding: '2rem' }}>Loading…</p>
+    </main>
+  );
+
+  const cfg = STATUS_CONFIG[item.status] ?? { bg: '#F1EFE8', color: '#444441', border: '#D3D1C7' };
+
   const grouped = files.reduce<Record<string, MaterialFile[]>>((acc, f) => {
     const parts = f.file_name.split('/');
     const folder = parts.length > 1 ? parts[0] : '—';
@@ -119,87 +85,173 @@ export default function MaterialDetail() {
   const formatSize = (bytes: number) =>
     bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 
+  const fileExt = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
+
+  const extColor: Record<string, { bg: string; color: string }> = {
+    pdf:  { bg: '#FCEBEB', color: '#791F1F' },
+    md:   { bg: '#E6F1FB', color: '#0C447C' },
+    txt:  { bg: '#F1EFE8', color: '#444441' },
+    docx: { bg: '#EEEDFE', color: '#3C3489' },
+  };
+
   return (
     <main style={s.page}>
-      <button style={s.backBtn} onClick={() => router.push('/reading-list')}>
-        ← Back to reading list
-      </button>
+      {/* Breadcrumb */}
+      <nav style={s.breadcrumb}>
+        <button style={s.crumbBtn} onClick={() => router.push('/dashboard')}>
+          Dashboard
+        </button>
+        <span style={s.crumbSep}>/</span>
+        <button style={s.crumbBtn} onClick={() => router.push('/reading-list')}>
+          Reading list
+        </button>
+        <span style={s.crumbSep}>/</span>
+        <span style={s.crumbCurrent}>{item.title}</span>
+      </nav>
 
-      <div style={s.container}>
-        {/* Material Info */}
-        <div style={s.infoCard}>
-          <div style={s.cardHeader}>
-            <div>
-              <p style={s.eyebrow}>Material</p>
-              <h1 style={s.title}>{item?.title}</h1>
+      <div style={s.layout}>
+        {/* Sidebar */}
+        <aside style={s.sidebar}>
+          <div style={s.sidebarCard}>
+            {/* Status + type */}
+            <div style={s.cardTop}>
+              <span style={{
+                ...s.pill,
+                background: cfg.bg,
+                color: cfg.color,
+                border: `0.5px solid ${cfg.border}`,
+              }}>
+                {readingStatusLabels[item.status as ReadingStatus] ?? item.status}
+              </span>
+              <span style={s.typePill}>{item.type}</span>
             </div>
-            <span style={{ ...s.badge, background: badge.bg, color: badge.color }}>
-              {item ? readingStatusLabels[item.status as ReadingStatus] : ''}
-            </span>
+
+            <h1 style={s.title}>{item.title}</h1>
+
+            {item.notes && (
+              <div style={s.notesBlock}>
+                <p style={s.notesLabel}>Notes</p>
+                <p style={s.notesText}>{item.notes}</p>
+              </div>
+            )}
+
+            <div style={s.divider} />
+
+            {/* Move to */}
+            <p style={s.actionLabel}>Move to</p>
+            <div style={s.actionRow}>
+              {(['reading', 'want', 'done'] as const).map((st) => {
+                const scfg = STATUS_CONFIG[st];
+                const isActive = item.status === st;
+                const labels: Record<string, string> = {
+                  reading: 'Reading list',
+                  want: 'Want',
+                  done: 'Done',
+                };
+                return (
+                  <button
+                    key={st}
+                    disabled={isActive}
+                    style={{
+                      ...s.statusBtn,
+                      background: isActive ? scfg.bg : 'transparent',
+                      color: isActive ? scfg.color : '#85B7EB',
+                      border: isActive ? `0.5px solid ${scfg.border}` : '0.5px solid rgba(0,0,0,0.1)',
+                      cursor: isActive ? 'default' : 'pointer',
+                      fontWeight: isActive ? 600 : 400,
+                    }}
+                    onClick={() => !isActive && updateStatus(st)}
+                  >
+                    {labels[st]}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={s.divider} />
+
+            {/* Danger zone */}
+            <div style={s.dangerRow}>
+              <button style={s.btnGhost} onClick={unwantMaterial}>Unwant</button>
+              <button style={s.btnDanger} onClick={deleteMaterial}>Delete</button>
+            </div>
+          </div>
+        </aside>
+
+        {/* Files */}
+        <div style={s.main}>
+          <div style={s.mainHeader}>
+            <p style={s.eyebrow}>Files</p>
+            <h2 style={s.mainTitle}>
+              {files.length === 0
+                ? 'No files yet'
+                : `${files.length} file${files.length !== 1 ? 's' : ''}`}
+            </h2>
           </div>
 
-          {item?.type && <span style={s.typePill}>{item.type}</span>}
-
-          <hr style={s.divider} />
-
-          <div style={s.actions}>
-            <button
-              style={item?.status === 'reading' ? s.btnActiveReading : s.btnPrimary}
-              disabled={item?.status === 'reading'}
-              onClick={() => item && updateStatus('reading')}
-            >
-              {item?.status === 'reading' ? '📖 In reading list' : '+ Add to reading list'}
-            </button>
-            <button
-              style={item?.status === 'want' ? s.btnActiveWant : s.btnSecondary}
-              disabled={item?.status === 'want'}
-              onClick={() => item && updateStatus('want')}
-            >
-              {item?.status === 'want' ? '🔖 Wanted' : '🔖 Want'}
-            </button>
-          </div>
-
-          <hr style={s.divider} />
-
-          <div style={s.actions}>
-            <button style={s.btnArchive} onClick={archiveMaterial}>
-              📋 Unwant
-            </button>
-            <button style={s.btnDelete} onClick={deleteMaterial}>
-              🗑️ Delete
-            </button>
-          </div>
-        </div>
-
-        {/* File List */}
-        <div style={s.filesContainer}>
-          <h2 style={s.filesTitle}>Select a file to read</h2>
-          
-          {files.length > 0 ? (
-            <div style={s.filesList}>
+          {files.length === 0 ? (
+            <div style={s.empty}>
+              <p style={s.emptyTitle}>No files attached</p>
+              <p style={s.emptyText}>Upload files when adding a new material.</p>
+              <button style={s.navAdd} onClick={() => router.push('/add-material')}>
+                + Add new material
+              </button>
+            </div>
+          ) : (
+            <div style={s.fileGroups}>
               {Object.entries(grouped).map(([folder, folderFiles]) => (
                 <div key={folder} style={s.folderGroup}>
-                  {folder !== '—' && <p style={s.folderLabel}>📁 {folder}</p>}
+                  {folder !== '—' && (
+                    <div style={s.folderHeader}>
+                      <i className="ti ti-folder" style={{ fontSize: '15px', color: '#378ADD' }} aria-hidden="true" />
+                      <span style={s.folderName}>{folder}</span>
+                      <span style={s.folderCount}>
+                        {folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                  )}
                   <div style={s.filesGrid}>
-                    {folderFiles.map((f) => (
-                      <button
-                        key={f.id}
-                        style={s.fileCard}
-                        onClick={() => openFile(f)}
-                      >
-                        <span style={s.fileCardIcon}>📄</span>
-                        <span style={s.fileCardName}>
-                          {folder !== '—' ? f.file_name.split('/').pop() : f.file_name}
-                        </span>
-                        <span style={s.fileCardSize}>{formatSize(f.file_size)}</span>
-                      </button>
-                    ))}
+                    {folderFiles.map((f) => {
+                      const displayName = folder !== '—'
+                        ? f.file_name.split('/').pop()!
+                        : f.file_name;
+                      const ext = fileExt(f.file_name);
+                      const extUpper = ext.toUpperCase();
+                      const extCfg = extColor[ext] ?? { bg: '#F1EFE8', color: '#5F5E5A' };
+
+                      return (
+                        <button
+                          key={f.id}
+                          style={s.fileCard}
+                          onMouseEnter={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.borderColor = '#85B7EB';
+                          }}
+                          onMouseLeave={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(0,0,0,0.08)';
+                          }}
+                          onClick={() => router.push(`/read/${id}/${f.id}`)}
+                        >
+                          <div style={s.fileCardTop}>
+                            <span style={{
+                              ...s.extBadge,
+                              background: extCfg.bg,
+                              color: extCfg.color,
+                            }}>
+                              {extUpper || 'FILE'}
+                            </span>
+                            <span style={s.fileSize}>{formatSize(f.file_size)}</span>
+                          </div>
+                          <p style={s.fileName}>{displayName}</p>
+                          <div style={s.fileFooter}>
+                            <span style={s.openLabel}>Open to read →</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
             </div>
-          ) : (
-            <p style={s.emptyMessage}>No files available for this material.</p>
           )}
         </div>
       </div>
@@ -210,223 +262,182 @@ export default function MaterialDetail() {
 const s: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
-    padding: '2rem',
-    background: 'linear-gradient(135deg, #F0F9FF 0%, #E0F7FF 100%)',
-    fontFamily: "'Arial', sans-serif",
-  },
-  backBtn: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    color: '#0077BE',
-    fontSize: '13px',
-    padding: '0 0 1.25rem',
-    fontWeight: 500,
-    transition: 'color 0.2s',
-  },
-  container: {
-    display: 'grid',
-    gridTemplateColumns: '320px 1fr',
-    gap: '24px',
-    maxWidth: '1200px',
+    padding: '1.5rem 2rem',
+    background: '#F4F7FC',
+    fontFamily: "'Inter', 'Arial', sans-serif",
+    maxWidth: '1100px',
     margin: '0 auto',
   },
-  infoCard: {
-    background: '#fff',
-    border: '1px solid #B3E5FC',
-    borderRadius: '10px',
-    padding: '1.5rem',
-    height: 'fit-content',
-    position: 'sticky' as const,
-    top: '2rem',
-    boxShadow: '0 2px 8px rgba(0, 119, 190, 0.08)',
+  // Breadcrumb
+  breadcrumb: {
+    display: 'flex', alignItems: 'center', gap: '6px',
+    marginBottom: '1.5rem',
   },
-  cardHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
+  crumbBtn: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#378ADD', fontSize: '12px', padding: '2px 4px',
+    fontFamily: 'inherit',
+  },
+  crumbSep: { fontSize: '12px', color: 'rgba(0,0,0,0.2)' },
+  crumbCurrent: {
+    fontSize: '12px', color: '#85B7EB',
+    maxWidth: '200px', overflow: 'hidden',
+    textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+  },
+  // Layout
+  layout: {
+    display: 'grid',
+    gridTemplateColumns: '280px 1fr',
+    gap: '16px',
     alignItems: 'flex-start',
-    gap: '12px',
-    marginBottom: '12px',
   },
-  eyebrow: {
-    margin: '0 0 4px',
-    fontSize: '11px',
-    letterSpacing: '0.1em',
-    textTransform: 'uppercase' as const,
-    color: '#0077BE',
-    fontWeight: 600,
+  // Sidebar
+  sidebar: { position: 'sticky' as const, top: '1.5rem' },
+  sidebarCard: {
+    background: '#fff',
+    border: '0.5px solid rgba(0,0,0,0.08)',
+    borderRadius: '12px',
+    padding: '1.25rem',
   },
-  title: {
-    margin: 0,
-    fontSize: '1.3rem',
-    fontWeight: 700,
-    lineHeight: 1.25,
-    color: '#0C3A66',
-    fontFamily: "'Georgia', serif",
+  cardTop: {
+    display: 'flex', alignItems: 'center',
+    gap: '6px', marginBottom: '10px', flexWrap: 'wrap' as const,
   },
-  badge: {
-    fontSize: '11px',
-    fontWeight: 600,
-    padding: '3px 10px',
-    borderRadius: '4px',
-    whiteSpace: 'nowrap' as const,
+  pill: {
+    fontSize: '10px', fontWeight: 600,
+    padding: '3px 9px', borderRadius: '20px',
     textTransform: 'capitalize' as const,
   },
   typePill: {
-    display: 'inline-block',
-    fontSize: '12px',
-    padding: '2px 10px',
-    borderRadius: '4px',
-    background: '#E0F7FF',
-    color: '#0077BE',
-    border: '1px solid #B3E5FC',
+    fontSize: '10px', padding: '3px 9px', borderRadius: '20px',
+    background: '#E6F1FB', color: '#0C447C',
+    border: '0.5px solid #B5D4F4',
     textTransform: 'capitalize' as const,
-    fontWeight: 500,
+  },
+  title: {
+    margin: '0 0 12px',
+    fontSize: '1.05rem', fontWeight: 600,
+    lineHeight: 1.4, color: '#042C53',
+    letterSpacing: '-0.01em',
+  },
+  notesBlock: { marginBottom: '12px' },
+  notesLabel: {
+    margin: '0 0 5px', fontSize: '10px', fontWeight: 600,
+    textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: '#85B7EB',
+  },
+  notesText: {
+    margin: 0, fontSize: '12px', color: '#378ADD',
+    lineHeight: 1.6, background: '#EBF4FD',
+    borderRadius: '8px', padding: '8px 10px',
   },
   divider: {
-    border: 'none',
-    borderTop: '1px solid #B3E5FC',
-    margin: '1.25rem 0',
+    borderTop: '0.5px solid rgba(55,138,221,0.15)',
+    margin: '12px 0',
   },
-  actions: {
-    display: 'flex',
-    gap: '8px',
-    flexWrap: 'wrap' as const,
+  actionLabel: {
+    margin: '0 0 8px', fontSize: '10px', fontWeight: 600,
+    textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: '#85B7EB',
   },
-  btnPrimary: {
-    padding: '8px 14px',
-    border: 'none',
-    borderRadius: '6px',
-    background: '#0077BE',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 600,
-    transition: 'background 0.2s',
+  actionRow: { display: 'flex', gap: '5px', flexWrap: 'wrap' as const },
+  statusBtn: {
+    padding: '6px 11px',
+    borderRadius: '20px',
+    fontSize: '11px',
+    fontFamily: 'inherit',
   },
-  btnSecondary: {
-    padding: '8px 14px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    background: '#F0F9FF',
-    color: '#0077BE',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 500,
+  dangerRow: { display: 'flex', gap: '6px' },
+  btnGhost: {
+    flex: 1, padding: '7px 10px',
+    border: '0.5px solid rgba(0,0,0,0.1)',
+    borderRadius: '8px', background: 'transparent',
+    color: '#85B7EB', cursor: 'pointer',
+    fontSize: '12px', fontFamily: 'inherit',
   },
-  btnActiveReading: {
-    padding: '8px 14px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    background: '#E0F7FF',
-    color: '#0077BE',
-    cursor: 'default',
-    fontSize: '12px',
-    fontWeight: 600,
+  btnDanger: {
+    flex: 1, padding: '7px 10px',
+    border: '0.5px solid #F09595',
+    borderRadius: '8px', background: '#fff',
+    color: '#A32D2D', cursor: 'pointer',
+    fontSize: '12px', fontWeight: 600, fontFamily: 'inherit',
   },
-  btnActiveWant: {
-    padding: '8px 14px',
-    border: '1px solid #FFE0B2',
-    borderRadius: '6px',
-    background: '#FFF3E0',
-    color: '#E65100',
-    cursor: 'default',
-    fontSize: '12px',
-    fontWeight: 600,
+  // Main
+  main: { minWidth: 0 },
+  mainHeader: { marginBottom: '1rem' },
+  eyebrow: {
+    margin: '0 0 3px', fontSize: '10px',
+    letterSpacing: '0.1em', textTransform: 'uppercase' as const,
+    color: '#85B7EB', fontWeight: 600,
   },
-  btnArchive: {
-    padding: '8px 14px',
-    border: '1px solid #B3E5FC',
-    borderRadius: '6px',
-    background: '#F0F9FF',
-    color: '#0077BE',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 500,
+  mainTitle: {
+    margin: 0, fontSize: '1.3rem', fontWeight: 600,
+    color: '#042C53', letterSpacing: '-0.02em',
   },
-  btnDelete: {
-    padding: '8px 14px',
-    border: '1px solid #FF6B6B',
-    borderRadius: '6px',
-    background: '#fff',
-    color: '#FF6B6B',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 600,
+  // Empty
+  empty: {
+    padding: '3rem 1rem', textAlign: 'center' as const,
+    border: '0.5px dashed #B5D4F4',
+    borderRadius: '12px', background: '#fff',
   },
-  // Files section
-  filesContainer: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '16px',
+  emptyTitle: { fontSize: '14px', fontWeight: 600, color: '#042C53', marginBottom: '6px' },
+  emptyText: { color: '#85B7EB', fontSize: '12px', marginBottom: '1rem' },
+  navAdd: {
+    padding: '7px 16px', borderRadius: '20px',
+    border: 'none', background: '#185FA5',
+    color: '#fff', fontSize: '12px',
+    fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
   },
-  filesTitle: {
-    margin: 0,
-    fontSize: '1.5rem',
-    fontWeight: 700,
-    color: '#0C3A66',
-    fontFamily: "'Georgia', serif",
+  // File groups
+  fileGroups: { display: 'grid', gap: '20px' },
+  folderGroup: { display: 'grid', gap: '8px' },
+  folderHeader: {
+    display: 'flex', alignItems: 'center', gap: '6px',
+    padding: '4px 0',
   },
-  filesList: {
-    display: 'grid',
-    gap: '24px',
+  folderName: {
+    fontSize: '12px', fontWeight: 600, color: '#042C53',
   },
-  folderGroup: {
-    display: 'grid',
-    gap: '12px',
-  },
-  folderLabel: {
-    margin: 0,
-    fontSize: '12px',
-    fontWeight: 700,
-    color: '#0077BE',
+  folderCount: {
+    fontSize: '10px', color: '#85B7EB',
+    background: '#E6F1FB', padding: '1px 8px',
+    borderRadius: '20px', border: '0.5px solid #B5D4F4',
   },
   filesGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-    gap: '12px',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+    gap: '8px',
   },
+  // File card — vertical tile style
   fileCard: {
+    background: '#fff',
+    border: '0.5px solid rgba(0,0,0,0.08)',
+    borderRadius: '10px',
+    padding: '14px',
+    cursor: 'pointer',
+    textAlign: 'left' as const,
+    transition: 'border-color 0.15s',
     display: 'flex',
     flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '1.5rem',
-    background: '#fff',
-    border: '2px solid #B3E5FC',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    minHeight: '140px',
-    textAlign: 'center' as const,
-    boxShadow: '0 1px 3px rgba(0, 119, 190, 0.05)',
+    gap: '8px',
+    fontFamily: 'inherit',
   },
-  fileCardIcon: {
-    fontSize: '32px',
-    marginBottom: '8px',
+  fileCardTop: {
+    display: 'flex', alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  fileCardName: {
-    fontSize: '13px',
-    fontWeight: 600,
-    color: '#0C3A66',
-    marginBottom: '6px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-    width: '100%',
+  extBadge: {
+    fontSize: '10px', fontWeight: 700,
+    padding: '3px 7px', borderRadius: '6px',
+    letterSpacing: '0.05em',
   },
-  fileCardSize: {
-    fontSize: '11px',
-    color: '#0099FF',
+  fileSize: { fontSize: '10px', color: '#85B7EB' },
+  fileName: {
+    margin: 0, fontSize: '12px', fontWeight: 500,
+    color: '#042C53', lineHeight: 1.4,
+    overflow: 'hidden', textOverflow: 'ellipsis',
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical' as const,
   },
-  emptyMessage: {
-    padding: '2rem',
-    textAlign: 'center' as const,
-    color: '#0099FF',
-    fontSize: '14px',
-    background: '#fff',
-    border: '1px dashed #B3E5FC',
-    borderRadius: '8px',
-    margin: 0,
-  },
+  fileFooter: { marginTop: 'auto' },
+  openLabel: { fontSize: '11px', color: '#378ADD', fontWeight: 500 },
 };
